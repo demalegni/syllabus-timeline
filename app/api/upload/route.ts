@@ -1,24 +1,9 @@
 import { NextResponse } from "next/server";
-import fs from "fs/promises";
-import os from "os";
-import path from "path";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import pdf from "pdf-parse";
 
-const extract = require("pdf-text-extract");
-const PDFTOTEXT_PATH = "/opt/homebrew/bin/pdftotext";
-
-function extractTextFromPdf(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    extract(
-      filePath,
-      { firstPage: 1, lastPage: 5, bin: PDFTOTEXT_PATH },
-      (err: any, pages: string[]) => {
-        if (err) return reject(err);
-        resolve((pages || []).join("\n\n"));
-      }
-    );
-  });
-}
+// Ensure this runs in Node (pdf-parse needs Node runtime)
+export const runtime = "nodejs";
 
 function extractEventsFromText(raw: string) {
   const lines = raw
@@ -79,10 +64,7 @@ export async function POST(req: Request) {
     const { data: userData } = await supabase.auth.getUser();
 
     if (!userData?.user) {
-      return NextResponse.json(
-        { message: "Please log in first at /login." },
-        { status: 401 }
-      );
+      return NextResponse.json({ message: "Please log in first at /login." }, { status: 401 });
     }
 
     const formData = await req.formData();
@@ -92,20 +74,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "No file received." }, { status: 400 });
     }
 
-    // Save PDF temp
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "syllabus-"));
     const safeName = (file.name || "syllabus.pdf").replace(/[^\w.\-]/g, "_");
-    const tmpPath = path.join(tmpDir, safeName);
 
+    // Read file into Buffer (works in Vercel Node runtime)
     const arrayBuffer = await file.arrayBuffer();
-    await fs.writeFile(tmpPath, Buffer.from(arrayBuffer));
+    const buffer = Buffer.from(arrayBuffer);
 
-    // Extract text
-    const text = await extractTextFromPdf(tmpPath);
+    // Extract text (no external binaries)
+    let text = "";
+    if (file.type === "application/pdf" || safeName.toLowerCase().endsWith(".pdf")) {
+      const parsed = await pdf(buffer);
+      text = parsed.text || "";
+    } else {
+      // Optional: allow .txt uploads too
+      text = buffer.toString("utf8");
+    }
 
     if (!text.trim() || text.trim().length < 50) {
       return NextResponse.json(
-        { message: "This PDF looks scanned/image-only (no selectable text). Try a different PDF." },
+        { message: "Couldn’t read text from this file. If it’s a scanned PDF (image-only), try a selectable-text PDF." },
         { status: 400 }
       );
     }
